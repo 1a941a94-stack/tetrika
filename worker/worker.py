@@ -144,6 +144,23 @@ def analysis_schema() -> dict:
         "required": ["step_id", "status", "score", "comment", "recommendation", "evidence"],
         "additionalProperties": False,
     }
+    insight = {
+        "type": "object",
+        "properties": {
+            "insight_type": {"type": "string", "enum": ["praise","issue","pain","objection","objection_handled","objection_unhandled","product_link","goal","decision"]},
+            "label": {"type": "string"},
+            "detail": {"type": "string"},
+            "speaker": {"type": "string"},
+            "start": {"type": "number"},
+            "end": {"type": "number"},
+            "related_start": {"type": "number"},
+            "related_end": {"type": "number"},
+            "severity": {"type": "integer", "minimum": 1, "maximum": 3},
+            "tags": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["insight_type","label","detail","speaker","start","end","related_start","related_end","severity","tags"],
+        "additionalProperties": False
+    }
     return {
         "type": "object",
         "properties": {
@@ -152,8 +169,9 @@ def analysis_schema() -> dict:
             "strengths": {"type": "array", "items": {"type": "string"}},
             "improvements": {"type": "array", "items": {"type": "string"}},
             "steps": {"type": "array", "items": step},
+            "insights": {"type": "array", "items": insight},
         },
-        "required": ["overall_score", "summary", "strengths", "improvements", "steps"],
+        "required": ["overall_score", "summary", "strengths", "improvements", "steps", "insights"],
         "additionalProperties": False,
     }
 
@@ -167,6 +185,15 @@ def analyze(transcript: str) -> tuple[dict, dict]:
 Критически важно: этап 9 — предзакрытие должен происходить ДО выхода на тарифы.
 Баллы должны отражать качество конкретного этапа. Для evidence используй короткие точные цитаты из транскрипта с таймкодами.
 Верни ровно 11 элементов steps, по одному на каждый step_id 1..11 в исходном порядке.
+Дополнительно создай insights — ключевые моменты звонка для навигации по транскрипту:
+- pain: клиент сформулировал боль/проблему;
+- objection: клиент озвучил возражение;
+- objection_handled / objection_unhandled: качество отработки возражения;
+- product_link: менеджер связал продукт с ранее озвученной болью/целью;
+- praise: сильное действие менеджера;
+- issue: ошибка или упущение менеджера;
+- goal / decision: цель или решение клиента.
+Для каждого insight укажи точный start/end исходного момента. Если insight связан с другим моментом (например pain → product_link), укажи related_start/related_end второго момента, иначе повтори start/end.
 
 МЕТОДОЛОГИЯ:
 {rubric}
@@ -270,6 +297,25 @@ def process_call(call: dict):
             for step in result["steps"]
         ])
         usage = raw.get("usage") or {}
+        sb_delete("call_insights", {"call_id": f"eq.{call_id}"})
+        if result.get("insights"):
+            sb_post("call_insights", [
+                {
+                    "call_id": call_id,
+                    "insight_type": insight["insight_type"],
+                    "label": insight["label"],
+                    "detail": insight["detail"],
+                    "speaker": insight.get("speaker"),
+                    "start_seconds": insight.get("start"),
+                    "end_seconds": insight.get("end"),
+                    "related_start_seconds": insight.get("related_start"),
+                    "related_end_seconds": insight.get("related_end"),
+                    "severity": insight.get("severity", 1),
+                    "tags": insight.get("tags", []),
+                }
+                for insight in result["insights"]
+            ])
+
         sb_post("analysis_runs", {
             "call_id": call_id,
             "model": ANALYSIS_MODEL,
