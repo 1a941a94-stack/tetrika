@@ -4,18 +4,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 type CallRow = {
-  id:string; created_at:string; title:string; manager_id?:string|null; manager_name:string|null; source_filename:string;
-  status:string; duration_seconds:number|null; overall_score:number|null; summary:string|null
+  id:string; created_at:string; title:string; manager_id?:string|null; manager_name:string|null; group_id?:string|null; department_id?:string|null; source_filename:string;
+  status:string; duration_seconds:number|null; overall_score:number|null; summary:string|null; sale_outcome?:'won'|'lost'|'pending'|'unknown'
 }
-type Manager = { id:string; name:string; email?:string|null; is_active:boolean; created_at?:string }
+type Manager = { id:string; name:string; email?:string|null; is_active:boolean; group_id?:string|null; department_id?:string|null; created_at?:string }
+type SalesGroup = { id:string; name:string; department_id:string; rg_name?:string }
+type RoleInfo = { role:'rop'|'rg'; department_id:string; group_id?:string|null }
 type Step = {
-  step_id:number; status:'passed'|'partial'|'failed'|'not_applicable'; score:number; comment:string;
+  call_id?:string; step_id:number; status:'passed'|'partial'|'failed'|'not_applicable'; score:number; comment:string;
   recommendation:string|null; evidence:Array<{quote?:string; start?:number; end?:number; speaker?:string}>;
   rubric_steps?:{title:string}
 }
 type Segment = {id:number; start_seconds:number; end_seconds:number; speaker:string|null; text:string}
 type Insight = {
-  id?:number|string; insight_type:'praise'|'issue'|'pain'|'objection'|'objection_handled'|'objection_unhandled'|'product_link'|'goal'|'decision';
+  id?:number|string; call_id?:string; insight_type:'praise'|'issue'|'pain'|'objection'|'objection_handled'|'objection_unhandled'|'product_link'|'goal'|'decision';
   label:string; detail:string; speaker?:string|null; start_seconds:number; end_seconds:number;
   related_start_seconds?:number|null; related_end_seconds?:number|null; severity:number; tags?:string[]
 }
@@ -26,17 +28,21 @@ const statusLabels:Record<string,string> = {
 const stepTitles = ['Приветствие / смол-толк','Присутствие родителя','План урока','Знакомство с Р и У','ВП','Практика','Постановка целей','Презентация продукта','Предзакрытие до тарифов','Тарифы / попытка сделки','Отработка возражений']
 const mmss=(sec?:number|null)=>sec==null?'—':`${Math.floor(sec/60)}:${String(Math.floor(sec%60)).padStart(2,'0')}`
 
+const DEMO_GROUPS:SalesGroup[] = [
+  {id:'g1',name:'Группа Анны Петровой',department_id:'d1',rg_name:'Анна Петрова'},
+  {id:'g2',name:'Группа Ильи Орлова',department_id:'d1',rg_name:'Илья Орлов'}
+]
 const DEMO_MANAGERS:Manager[] = [
-  {id:'m1',name:'Екатерина',email:'ekaterina@example.com',is_active:true},
-  {id:'m2',name:'Алексей',email:'alexey@example.com',is_active:true},
-  {id:'m3',name:'Мария',email:'maria@example.com',is_active:true}
+  {id:'m1',name:'Екатерина',email:'ekaterina@example.com',is_active:true,group_id:'g1',department_id:'d1'},
+  {id:'m2',name:'Алексей',email:'alexey@example.com',is_active:true,group_id:'g2',department_id:'d1'},
+  {id:'m3',name:'Мария',email:'maria@example.com',is_active:true,group_id:'g1',department_id:'d1'}
 ]
 
 const DEMO_CALLS:CallRow[] = [
-  {id:'demo-1',created_at:new Date().toISOString(),title:'Диагностический урок — Анна',manager_id:'m1',manager_name:'Екатерина',source_filename:'demo.mp3',status:'completed',duration_seconds:3274,overall_score:74,summary:'Потребность выявлена хорошо, но менеджер пропустил предзакрытие и слишком быстро перешёл к цене.'},
-  {id:'demo-2',created_at:new Date(Date.now()-86400000).toISOString(),title:'Повторный звонок — Мария',manager_id:'m2',manager_name:'Алексей',source_filename:'demo2.mp3',status:'completed',duration_seconds:2810,overall_score:86,summary:'Сильная работа с болью и хорошее закрытие на следующий шаг.'},
-  {id:'demo-3',created_at:new Date(Date.now()-2*86400000).toISOString(),title:'Первичная консультация — Илья',manager_id:'m1',manager_name:'Екатерина',source_filename:'demo3.mp3',status:'completed',duration_seconds:3012,overall_score:68,summary:'Слишком ранняя презентация продукта и слабая отработка цены.'},
-  {id:'demo-4',created_at:new Date(Date.now()-3*86400000).toISOString(),title:'Диагностика — София',manager_id:'m2',manager_name:'Алексей',source_filename:'demo4.mp3',status:'completed',duration_seconds:3440,overall_score:91,summary:'Структурный звонок с хорошим предзакрытием и сильной работой с возражениями.'}
+  {id:'demo-1',created_at:new Date().toISOString(),title:'Диагностический урок — Анна',manager_id:'m1',manager_name:'Екатерина',group_id:'g1',department_id:'d1',source_filename:'demo.mp3',status:'completed',duration_seconds:3274,overall_score:74,summary:'Потребность выявлена хорошо, но менеджер пропустил предзакрытие и слишком быстро перешёл к цене.',sale_outcome:'lost'},
+  {id:'demo-2',created_at:new Date(Date.now()-86400000).toISOString(),title:'Повторный звонок — Мария',manager_id:'m2',manager_name:'Алексей',group_id:'g2',department_id:'d1',source_filename:'demo2.mp3',status:'completed',duration_seconds:2810,overall_score:86,summary:'Сильная работа с болью и хорошее закрытие на следующий шаг.',sale_outcome:'won'},
+  {id:'demo-3',created_at:new Date(Date.now()-2*86400000).toISOString(),title:'Первичная консультация — Илья',manager_id:'m1',manager_name:'Екатерина',group_id:'g1',department_id:'d1',source_filename:'demo3.mp3',status:'completed',duration_seconds:3012,overall_score:68,summary:'Слишком ранняя презентация продукта и слабая отработка цены.',sale_outcome:'lost'},
+  {id:'demo-4',created_at:new Date(Date.now()-3*86400000).toISOString(),title:'Диагностика — София',manager_id:'m2',manager_name:'Алексей',group_id:'g2',department_id:'d1',source_filename:'demo4.mp3',status:'completed',duration_seconds:3440,overall_score:91,summary:'Структурный звонок с хорошим предзакрытием и сильной работой с возражениями.',sale_outcome:'won'}
 ]
 
 const DEMO_STEPS:Step[] = [
@@ -84,6 +90,11 @@ export default function Home(){
   const [allInsights,setAllInsights]=useState<Insight[]>([])
   const [view,setView]=useState<'overview'|'managers'|'calls'>('overview')
   const [managers,setManagers]=useState<Manager[]>([])
+  const [groups,setGroups]=useState<SalesGroup[]>([])
+  const [roleInfo,setRoleInfo]=useState<RoleInfo|null>(null)
+  const [demoRole,setDemoRole]=useState<'rop'|'rg'>('rop')
+  const [selectedGroup,setSelectedGroup]=useState<string>('all')
+  const [allSteps,setAllSteps]=useState<Step[]>([])
   const [selectedManager,setSelectedManager]=useState<string>('all')
   const [managerDraft,setManagerDraft]=useState('')
   const [managerEmailDraft,setManagerEmailDraft]=useState('')
@@ -92,8 +103,13 @@ export default function Home(){
   const transcriptRef=useRef<HTMLDivElement|null>(null)
 
   const demo=!user
-  const visibleManagers=demo?DEMO_MANAGERS:managers
-  const baseCalls=demo?DEMO_CALLS:calls
+  const effectiveRole:RoleInfo = demo ? {role:demoRole,department_id:'d1',group_id:demoRole==='rg'?'g1':null} : (roleInfo || {role:'rg',department_id:'',group_id:null})
+  const visibleGroups=(demo?DEMO_GROUPS:groups).filter(g=>effectiveRole.role==='rop'||g.id===effectiveRole.group_id)
+  const scopeGroup=effectiveRole.role==='rg' ? (effectiveRole.group_id||'all') : selectedGroup
+  const allManagers=demo?DEMO_MANAGERS:managers
+  const visibleManagers=allManagers.filter(m=>scopeGroup==='all'||m.group_id===scopeGroup)
+  const scopedBaseCalls=(demo?DEMO_CALLS:calls).filter(c=>scopeGroup==='all'||c.group_id===scopeGroup)
+  const baseCalls=scopedBaseCalls
   const visibleCalls=selectedManager==='all'?baseCalls:baseCalls.filter(c=>c.manager_id===selectedManager || (!c.manager_id && c.manager_name===visibleManagers.find(m=>m.id===selectedManager)?.name))
   const current=demo?(selected||DEMO_CALLS[0]):selected
   const visibleSegments=demo?DEMO_SEGMENTS:segments
@@ -103,19 +119,28 @@ export default function Home(){
 
   async function refreshUser(){const {data}=await db.auth.getUser();setUser(data.user??null)}
   async function loadCalls(){
-    const [{data:callData},{data:all},{data:managerData}]=await Promise.all([
-      db.from('calls').select('id,created_at,title,manager_id,manager_name,source_filename,status,duration_seconds,overall_score,summary').order('created_at',{ascending:false}),
+    const [{data:callData},{data:all},{data:managerData},{data:groupData},{data:roleData},{data:stepData}]=await Promise.all([
+      db.from('calls').select('id,created_at,title,manager_id,manager_name,group_id,department_id,source_filename,status,duration_seconds,overall_score,summary,sale_outcome').order('created_at',{ascending:false}),
       db.from('call_insights').select('*'),
-      db.from('managers').select('id,name,email,is_active,created_at').order('name')
+      db.from('managers').select('id,name,email,is_active,group_id,department_id,created_at').order('name'),
+      db.from('sales_groups').select('id,name,department_id').order('name'),
+      db.from('user_roles').select('role,department_id,group_id').maybeSingle(),
+      db.from('analysis_step_results').select('call_id,step_id,status,score,comment,recommendation,evidence')
     ])
     setCalls((callData??[]) as CallRow[])
     setAllInsights((all??[]) as Insight[])
     setManagers((managerData??[]) as Manager[])
+    setGroups((groupData??[]) as SalesGroup[])
+    setRoleInfo((roleData??null) as RoleInfo|null)
+    setAllSteps((stepData??[]) as Step[])
   }
 
   async function createManager(e:React.FormEvent){
     e.preventDefault(); if(!user || !managerDraft.trim()) return
-    const {error}=await db.from('managers').insert({owner_user_id:user.id,name:managerDraft.trim(),email:managerEmailDraft.trim()||null})
+    const groupId=effectiveRole.role==='rg'?effectiveRole.group_id:(selectedGroup==='all'?null:selectedGroup)
+    if(!groupId) throw new Error('Сначала выберите группу')
+    const group=groups.find(g=>g.id===groupId)
+    const {error}=await db.from('managers').insert({owner_user_id:user.id,name:managerDraft.trim(),email:managerEmailDraft.trim()||null,group_id:groupId,department_id:group?.department_id||effectiveRole.department_id})
     if(error) throw error
     setManagerDraft(''); setManagerEmailDraft(''); await loadCalls()
   }
@@ -153,8 +178,9 @@ export default function Home(){
       const up=await db.storage.from('sales-audio').upload(path,file,{contentType:file.type||'application/octet-stream'})
       if(up.error)throw up.error
       const managerId=String(form.get('manager_id')||'')||null
-      const managerName=managers.find(m=>m.id===managerId)?.name||null
-      const ins=await db.from('calls').insert({user_id:user.id,title:String(form.get('title')||file.name),manager_id:managerId,manager_name:managerName,source_filename:file.name,storage_path:path,mime_type:file.type||null,status:'queued'})
+      const manager=managers.find(m=>m.id===managerId)
+      const managerName=manager?.name||null
+      const ins=await db.from('calls').insert({user_id:user.id,title:String(form.get('title')||file.name),manager_id:managerId,manager_name:managerName,group_id:manager?.group_id||effectiveRole.group_id||null,department_id:manager?.department_id||effectiveRole.department_id,source_filename:file.name,storage_path:path,mime_type:file.type||null,status:'queued'})
       if(ins.error)throw ins.error
       e.currentTarget.reset();await loadCalls();setView('calls')
     }finally{setUploading(false)}
@@ -166,16 +192,26 @@ export default function Home(){
   const handled=aggregateInsights.filter(i=>i.insight_type==='objection_handled').length
   const unhandled=aggregateInsights.filter(i=>i.insight_type==='objection_unhandled').length
   const issueCounts=Object.entries(aggregateInsights.filter(i=>i.insight_type==='issue'||i.insight_type==='objection_unhandled').reduce((acc:any,i)=>{const k=i.tags?.[0]||i.label;acc[k]=(acc[k]||0)+1;return acc},{})).sort((a:any,b:any)=>b[1]-a[1])
+  const lostCallIds=new Set(visibleCalls.filter(c=>c.sale_outcome==='lost').map(c=>c.id))
+  const lostUnhandled=aggregateInsights.filter(i=>i.insight_type==='objection_unhandled' && (!i.call_id || lostCallIds.has(String(i.call_id))))
+  const topLostObjection=Object.entries(lostUnhandled.reduce((acc:any,i)=>{const k=i.tags?.[0]||i.label;acc[k]=(acc[k]||0)+1;return acc},{})).sort((a:any,b:any)=>Number(b[1])-Number(a[1]))[0] as [string,number]|undefined
+  const scopeCallIds=new Set(visibleCalls.map(c=>c.id))
+  const scopeSteps=(demo?DEMO_STEPS:allSteps).filter(s=>demo||!s.call_id||scopeCallIds.has(String(s.call_id)))
+  const stepAgg=stepTitles.map((title,idx)=>{const arr=scopeSteps.filter(s=>s.step_id===idx+1);return {title,avg:arr.length?Math.round(arr.reduce((a,s)=>a+Number(s.score),0)/arr.length):0,count:arr.length}}).sort((a,b)=>a.avg-b.avg)
+  const weakest=stepAgg.filter(x=>x.count||demo).slice(0,3)
+  const strongest=[...stepAgg].filter(x=>x.count||demo).sort((a,b)=>b.avg-a.avg).slice(0,3)
+  const won=visibleCalls.filter(c=>c.sale_outcome==='won').length
+  const lost=visibleCalls.filter(c=>c.sale_outcome==='lost').length
 
   return <main className="appShell">
     <aside className="sidebar">
-      <div className="brand"><div className="brandMark">S</div><div><strong>Sales Call AI</strong><small>{demo?'Demo mode':'Workspace'}</small></div></div>
+      <div className="brand"><div className="brandMark">S</div><div><strong>Sales Call AI</strong><small>{demo?`Demo · ${demoRole.toUpperCase()}`:effectiveRole.role.toUpperCase()}</small></div></div>
       <nav>
         <button className={view==='overview'?'navActive':''} onClick={()=>setView('overview')}>Обзор</button>
         <button className={view==='managers'?'navActive':''} onClick={()=>setView('managers')}>Менеджеры <span>{visibleManagers.length}</span></button>
         <button className={view==='calls'?'navActive':''} onClick={()=>setView('calls')}>Звонки <span>{visibleCalls.length}</span></button>
       </nav>
-      <div className="sideBottom">{demo?<div className="demoNote">Просмотр без авторизации. Реальные данные закрыты RLS.</div>:<button className="ghost" onClick={()=>db.auth.signOut()}>Выйти</button>}</div>
+      <div className="sideBottom">{demo?<><div className="roleSwitch"><button className={demoRole==='rg'?'on':''} onClick={()=>{setDemoRole('rg');setSelectedGroup('g1')}}>РГ</button><button className={demoRole==='rop'?'on':''} onClick={()=>{setDemoRole('rop');setSelectedGroup('all')}}>РОП</button></div><div className="demoNote">Переключи роль, чтобы увидеть разные уровни доступа.</div></>:<button className="ghost" onClick={()=>db.auth.signOut()}>Выйти</button>}</div>
     </aside>
 
     <section className="mainArea">
@@ -185,14 +221,22 @@ export default function Home(){
       </header>
 
       {view==='overview'?<div className="overview">
-        <div className="filterBar"><strong>Фильтр:</strong><button className={selectedManager==='all'?'filterActive':''} onClick={()=>setSelectedManager('all')}>Весь отдел</button>{visibleManagers.map(m=><button key={m.id} className={selectedManager===m.id?'filterActive':''} onClick={()=>setSelectedManager(m.id)}>{m.name}</button>)}</div>
+        <div className="filterBar"><strong>{effectiveRole.role==='rop'?'Группа:':'Менеджер:'}</strong>{effectiveRole.role==='rop'&&<><button className={selectedGroup==='all'?'filterActive':''} onClick={()=>{setSelectedGroup('all');setSelectedManager('all')}}>Весь отдел</button>{visibleGroups.map(g=><button key={g.id} className={selectedGroup===g.id?'filterActive':''} onClick={()=>{setSelectedGroup(g.id);setSelectedManager('all')}}>{g.rg_name||g.name}</button>)}</>}<button className={selectedManager==='all'?'filterActive':''} onClick={()=>setSelectedManager('all')}>{effectiveRole.role==='rop'?'Все менеджеры':'Вся группа'}</button>{visibleManagers.map(m=><button key={m.id} className={selectedManager===m.id?'filterActive':''} onClick={()=>setSelectedManager(m.id)}>{m.name}</button>)}</div>
         <section className="metricGrid">
           <article><span>Средний балл</span><strong>{avg}</strong><small>по {visibleCalls.length} звонкам</small></article>
-          <article><span>Звонков</span><strong>{visibleCalls.length}</strong><small>в текущей выборке</small></article>
-          <article><span>Возражения</span><strong>{objections.length}</strong><small>{handled} отработано · {unhandled} нет</small></article>
-          <article><span>Лучший результат</span><strong>{Math.max(...scores,0)}</strong><small>{visibleCalls.sort((a,b)=>(b.overall_score||0)-(a.overall_score||0))[0]?.manager_name||'—'}</small></article>
+          <article><span>Встреч проведено</span><strong>{visibleCalls.length}</strong><small>{won} продаж · {lost} без продажи</small></article>
+          <article><span>Неотработанное возражение</span><strong className="textMetric">{topLostObjection?.[0]||'—'}</strong><small>{topLostObjection?topLostObjection[1]+' раз после него не было продажи':'нет данных'}</small></article>
+          <article><span>Лучший результат</span><strong>{Math.max(...scores,0)}</strong><small>{visibleCalls.slice().sort((a,b)=>(b.overall_score||0)-(a.overall_score||0))[0]?.manager_name||'—'}</small></article>
         </section>
 
+        {effectiveRole.role==='rop'&&selectedGroup==='all'&&<section className="groupCompare">
+          <div className="cardHead"><div><span className="eyebrow">РГ / СРАВНЕНИЕ</span><h2>Группы отдела</h2></div></div>
+          <div className="groupGrid">{visibleGroups.map(g=>{const gc=(demo?DEMO_CALLS:calls).filter(x=>x.group_id===g.id);const gs=gc.filter(x=>x.overall_score!=null).map(x=>Number(x.overall_score));const ga=Math.round(gs.reduce((a,b)=>a+b,0)/(gs.length||1));const gw=gc.filter(x=>x.sale_outcome==='won').length;return <button className="groupCard" key={g.id} onClick={()=>setSelectedGroup(g.id)}><div><strong>{g.rg_name||g.name}</strong><small>{g.name}</small></div><div><b>{ga||'—'}</b><span>ср. балл</span></div><div><b>{gc.length}</b><span>встреч</span></div><div><b>{gw}</b><span>продаж</span></div></button>})}</div>
+        </section>}
+        <section className="qualityGrid">
+          <div className="card"><div className="cardHead"><div><span className="eyebrow">ПРОВАЛЬНЫЕ ЭТАПЫ</span><h2>Требуют внимания</h2></div></div><div className="stageRank">{weakest.map((x,i)=><div key={x.title}><span>{i+1}</span><strong>{x.title}</strong><b>{x.avg}</b></div>)}</div></div>
+          <div className="card"><div className="cardHead"><div><span className="eyebrow">СИЛЬНЫЕ ЭТАПЫ</span><h2>Что получается лучше</h2></div></div><div className="stageRank good">{strongest.map((x,i)=><div key={x.title}><span>{i+1}</span><strong>{x.title}</strong><b>{x.avg}</b></div>)}</div></div>
+        </section>
         <section className="overviewGrid">
           <div className="card">
             <div className="cardHead"><div><span className="eyebrow">ЗВОНКИ</span><h2>Последние разборы</h2></div><button className="linkBtn" onClick={()=>setView('calls')}>Все звонки →</button></div>
