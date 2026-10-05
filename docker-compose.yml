@@ -1,0 +1,13 @@
+services:
+  web:
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./web/.env.local
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    env_file:
+      - ./worker/.env
