@@ -97,3 +97,26 @@ create policy "audio_delete_own" on storage.objects for delete to authenticated 
 
 create index if not exists analysis_runs_call_idx on public.analysis_runs(call_id);
 create index if not exists analysis_step_results_step_idx on public.analysis_step_results(step_id);
+
+
+create table if not exists public.call_insights (
+  id bigserial primary key,
+  call_id uuid not null references public.calls(id) on delete cascade,
+  insight_type text not null check (insight_type in ('praise','issue','pain','objection','objection_handled','objection_unhandled','product_link','goal','decision')),
+  label text not null,
+  detail text not null,
+  speaker text,
+  start_seconds numeric(10,3),
+  end_seconds numeric(10,3),
+  related_start_seconds numeric(10,3),
+  related_end_seconds numeric(10,3),
+  severity smallint not null default 1 check (severity between 1 and 3),
+  tags jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists call_insights_call_idx on public.call_insights(call_id, start_seconds);
+create index if not exists call_insights_type_idx on public.call_insights(insight_type);
+alter table public.call_insights enable row level security;
+grant select on public.call_insights to authenticated;
+create policy "call_insights_read_own_call" on public.call_insights for select to authenticated
+using (exists(select 1 from public.calls c where c.id = call_insights.call_id and c.user_id = (select auth.uid())));
