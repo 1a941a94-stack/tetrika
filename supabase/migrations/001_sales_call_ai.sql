@@ -141,3 +141,71 @@ create policy "managers_delete_own" on public.managers for delete to authenticat
 
 alter table public.calls add column if not exists manager_id uuid references public.managers(id) on delete set null;
 create index if not exists calls_manager_created_idx on public.calls(manager_id, created_at desc);
+
+
+create table if not exists public.sales_departments (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  created_by uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.sales_groups (
+  id uuid primary key default gen_random_uuid(),
+  department_id uuid not null references public.sales_departments(id) on delete cascade,
+  name text not null,
+  created_by uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.user_roles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null check (role in ('rop','rg')),
+  department_id uuid not null references public.sales_departments(id) on delete cascade,
+  group_id uuid references public.sales_groups(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  check ((role='rop' and group_id is null) or (role='rg' and group_id is not null))
+);
+
+alter table public.managers add column if not exists department_id uuid references public.sales_departments(id) on delete set null;
+alter table public.managers add column if not exists group_id uuid references public.sales_groups(id) on delete set null;
+
+alter table public.calls add column if not exists department_id uuid references public.sales_departments(id) on delete set null;
+alter table public.calls add column if not exists group_id uuid references public.sales_groups(id) on delete set null;
+alter table public.calls add column if not exists sale_outcome text not null default 'unknown'
+  check (sale_outcome in ('won','lost','pending','unknown'));
+alter table public.calls add column if not exists sale_value numeric(12,2);
+alter table public.calls add column if not exists outcome_source text not null default 'manual'
+  check (outcome_source in ('manual','ai','import'));
+
+create index if not exists sales_groups_department_idx on public.sales_groups(department_id);
+create index if not exists user_roles_department_idx on public.user_roles(department_id, role);
+create index if not exists user_roles_group_idx on public.user_roles(group_id) where group_id is not null;
+create index if not exists managers_group_idx on public.managers(group_id, is_active, name);
+create index if not exists calls_group_created_idx on public.calls(group_id, created_at desc);
+create index if not exists calls_department_created_idx on public.calls(department_id, created_at desc);
+create index if not exists calls_outcome_idx on public.calls(sale_outcome);
+
+alter table public.sales_departments enable row level security;
+alter table public.sales_groups enable row level security;
+alter table public.user_roles enable row level security;
+
+grant select, insert, update, delete on public.sales_departments to authenticated;
+grant select, insert, update, delete on public.sales_groups to authenticated;
+grant select on public.user_roles to authenticated;
+
+create policy "roles_read_self" on public.user_roles for select to authenticated
+using (user_id=(select auth.uid()));
+
+create policy "departments_read_scope" on public.sales_departments for select to authenticated
+using (exists(select 1 from public.user_roles ur where ur.user_id=(select auth.uid()) and ur.department_id=sales_departments.id));
+
+create policy "groups_read_scope" on public.sales_groups for select to authenticated
+using (exists(select 1 from public.user_roles ur where ur.user_id=(select auth.uid()) and ur.department_id=sales_groups.department_id and (ur.role='rop' or ur.group_id=sales_groups.id)));
+
+
+-- Hierarchical read scope for call child data
+drop policy if exists "segments_read_own_call" on public.transcript_segments;
+drop policy if exists "analysis_steps_read_own_call" on public.analysis_step_results;
+drop policy if exists "analysis_runs_read_own_call" on public.analysis_runs;
+drop policy if exists "call_insights_read_own_call" on public.call_insights;
