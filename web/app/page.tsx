@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 type CallRow = {
-  id:string; created_at:string; title:string; manager_name:string|null; source_filename:string;
+  id:string; created_at:string; title:string; manager_id?:string|null; manager_name:string|null; source_filename:string;
   status:string; duration_seconds:number|null; overall_score:number|null; summary:string|null
 }
+type Manager = { id:string; name:string; email?:string|null; is_active:boolean; created_at?:string }
 type Step = {
   step_id:number; status:'passed'|'partial'|'failed'|'not_applicable'; score:number; comment:string;
   recommendation:string|null; evidence:Array<{quote?:string; start?:number; end?:number; speaker?:string}>;
@@ -25,11 +26,17 @@ const statusLabels:Record<string,string> = {
 const stepTitles = ['Приветствие / смол-толк','Присутствие родителя','План урока','Знакомство с Р и У','ВП','Практика','Постановка целей','Презентация продукта','Предзакрытие до тарифов','Тарифы / попытка сделки','Отработка возражений']
 const mmss=(sec?:number|null)=>sec==null?'—':`${Math.floor(sec/60)}:${String(Math.floor(sec%60)).padStart(2,'0')}`
 
+const DEMO_MANAGERS:Manager[] = [
+  {id:'m1',name:'Екатерина',email:'ekaterina@example.com',is_active:true},
+  {id:'m2',name:'Алексей',email:'alexey@example.com',is_active:true},
+  {id:'m3',name:'Мария',email:'maria@example.com',is_active:true}
+]
+
 const DEMO_CALLS:CallRow[] = [
-  {id:'demo-1',created_at:new Date().toISOString(),title:'Диагностический урок — Анна',manager_name:'Екатерина',source_filename:'demo.mp3',status:'completed',duration_seconds:3274,overall_score:74,summary:'Потребность выявлена хорошо, но менеджер пропустил предзакрытие и слишком быстро перешёл к цене.'},
-  {id:'demo-2',created_at:new Date(Date.now()-86400000).toISOString(),title:'Повторный звонок — Мария',manager_name:'Алексей',source_filename:'demo2.mp3',status:'completed',duration_seconds:2810,overall_score:86,summary:'Сильная работа с болью и хорошее закрытие на следующий шаг.'},
-  {id:'demo-3',created_at:new Date(Date.now()-2*86400000).toISOString(),title:'Первичная консультация — Илья',manager_name:'Екатерина',source_filename:'demo3.mp3',status:'completed',duration_seconds:3012,overall_score:68,summary:'Слишком ранняя презентация продукта и слабая отработка цены.'},
-  {id:'demo-4',created_at:new Date(Date.now()-3*86400000).toISOString(),title:'Диагностика — София',manager_name:'Алексей',source_filename:'demo4.mp3',status:'completed',duration_seconds:3440,overall_score:91,summary:'Структурный звонок с хорошим предзакрытием и сильной работой с возражениями.'}
+  {id:'demo-1',created_at:new Date().toISOString(),title:'Диагностический урок — Анна',manager_id:'m1',manager_name:'Екатерина',source_filename:'demo.mp3',status:'completed',duration_seconds:3274,overall_score:74,summary:'Потребность выявлена хорошо, но менеджер пропустил предзакрытие и слишком быстро перешёл к цене.'},
+  {id:'demo-2',created_at:new Date(Date.now()-86400000).toISOString(),title:'Повторный звонок — Мария',manager_id:'m2',manager_name:'Алексей',source_filename:'demo2.mp3',status:'completed',duration_seconds:2810,overall_score:86,summary:'Сильная работа с болью и хорошее закрытие на следующий шаг.'},
+  {id:'demo-3',created_at:new Date(Date.now()-2*86400000).toISOString(),title:'Первичная консультация — Илья',manager_id:'m1',manager_name:'Екатерина',source_filename:'demo3.mp3',status:'completed',duration_seconds:3012,overall_score:68,summary:'Слишком ранняя презентация продукта и слабая отработка цены.'},
+  {id:'demo-4',created_at:new Date(Date.now()-3*86400000).toISOString(),title:'Диагностика — София',manager_id:'m2',manager_name:'Алексей',source_filename:'demo4.mp3',status:'completed',duration_seconds:3440,overall_score:91,summary:'Структурный звонок с хорошим предзакрытием и сильной работой с возражениями.'}
 ]
 
 const DEMO_STEPS:Step[] = [
@@ -75,13 +82,19 @@ export default function Home(){
   const [steps,setSteps]=useState<Step[]>([])
   const [insights,setInsights]=useState<Insight[]>([])
   const [allInsights,setAllInsights]=useState<Insight[]>([])
-  const [view,setView]=useState<'overview'|'calls'>('overview')
+  const [view,setView]=useState<'overview'|'managers'|'calls'>('overview')
+  const [managers,setManagers]=useState<Manager[]>([])
+  const [selectedManager,setSelectedManager]=useState<string>('all')
+  const [managerDraft,setManagerDraft]=useState('')
+  const [managerEmailDraft,setManagerEmailDraft]=useState('')
   const [activeTime,setActiveTime]=useState<number|null>(null)
   const [uploading,setUploading]=useState(false)
   const transcriptRef=useRef<HTMLDivElement|null>(null)
 
   const demo=!user
-  const visibleCalls=demo?DEMO_CALLS:calls
+  const visibleManagers=demo?DEMO_MANAGERS:managers
+  const baseCalls=demo?DEMO_CALLS:calls
+  const visibleCalls=selectedManager==='all'?baseCalls:baseCalls.filter(c=>c.manager_id===selectedManager || (!c.manager_id && c.manager_name===visibleManagers.find(m=>m.id===selectedManager)?.name))
   const current=demo?(selected||DEMO_CALLS[0]):selected
   const visibleSegments=demo?DEMO_SEGMENTS:segments
   const visibleSteps=demo?DEMO_STEPS:steps
@@ -90,10 +103,21 @@ export default function Home(){
 
   async function refreshUser(){const {data}=await db.auth.getUser();setUser(data.user??null)}
   async function loadCalls(){
-    const {data}=await db.from('calls').select('id,created_at,title,manager_name,source_filename,status,duration_seconds,overall_score,summary').order('created_at',{ascending:false})
-    setCalls((data??[]) as CallRow[])
-    const {data:all}=await db.from('call_insights').select('*')
+    const [{data:callData},{data:all},{data:managerData}]=await Promise.all([
+      db.from('calls').select('id,created_at,title,manager_id,manager_name,source_filename,status,duration_seconds,overall_score,summary').order('created_at',{ascending:false}),
+      db.from('call_insights').select('*'),
+      db.from('managers').select('id,name,email,is_active,created_at').order('name')
+    ])
+    setCalls((callData??[]) as CallRow[])
     setAllInsights((all??[]) as Insight[])
+    setManagers((managerData??[]) as Manager[])
+  }
+
+  async function createManager(e:React.FormEvent){
+    e.preventDefault(); if(!user || !managerDraft.trim()) return
+    const {error}=await db.from('managers').insert({owner_user_id:user.id,name:managerDraft.trim(),email:managerEmailDraft.trim()||null})
+    if(error) throw error
+    setManagerDraft(''); setManagerEmailDraft(''); await loadCalls()
   }
   async function openCall(call:CallRow){
     setSelected(call); setView('calls')
@@ -128,7 +152,9 @@ export default function Home(){
       const path=`${user.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`
       const up=await db.storage.from('sales-audio').upload(path,file,{contentType:file.type||'application/octet-stream'})
       if(up.error)throw up.error
-      const ins=await db.from('calls').insert({user_id:user.id,title:String(form.get('title')||file.name),manager_name:String(form.get('manager')||'')||null,source_filename:file.name,storage_path:path,mime_type:file.type||null,status:'queued'})
+      const managerId=String(form.get('manager_id')||'')||null
+      const managerName=managers.find(m=>m.id===managerId)?.name||null
+      const ins=await db.from('calls').insert({user_id:user.id,title:String(form.get('title')||file.name),manager_id:managerId,manager_name:managerName,source_filename:file.name,storage_path:path,mime_type:file.type||null,status:'queued'})
       if(ins.error)throw ins.error
       e.currentTarget.reset();await loadCalls();setView('calls')
     }finally{setUploading(false)}
@@ -146,6 +172,7 @@ export default function Home(){
       <div className="brand"><div className="brandMark">S</div><div><strong>Sales Call AI</strong><small>{demo?'Demo mode':'Workspace'}</small></div></div>
       <nav>
         <button className={view==='overview'?'navActive':''} onClick={()=>setView('overview')}>Обзор</button>
+        <button className={view==='managers'?'navActive':''} onClick={()=>setView('managers')}>Менеджеры <span>{visibleManagers.length}</span></button>
         <button className={view==='calls'?'navActive':''} onClick={()=>setView('calls')}>Звонки <span>{visibleCalls.length}</span></button>
       </nav>
       <div className="sideBottom">{demo?<div className="demoNote">Просмотр без авторизации. Реальные данные закрыты RLS.</div>:<button className="ghost" onClick={()=>db.auth.signOut()}>Выйти</button>}</div>
@@ -153,11 +180,12 @@ export default function Home(){
 
     <section className="mainArea">
       <header className="appTop">
-        <div><div className="eyebrow">{view==='overview'?'КОМАНДА / АНАЛИТИКА':'ЗВОНОК / QA'}</div><h1>{view==='overview'?'Контроль качества продаж':'Разбор звонка'}</h1></div>
-        {!demo&&<form className="miniUpload" onSubmit={upload}><input name="title" placeholder="Название"/><input name="manager" placeholder="Менеджер"/><input name="file" type="file" accept="audio/*,video/*" required/><button disabled={uploading}>{uploading?'…':'Загрузить'}</button></form>}
+        <div><div className="eyebrow">{view==='overview'?'КОМАНДА / АНАЛИТИКА':view==='managers'?'КОМАНДА / МЕНЕДЖЕРЫ':'ЗВОНОК / QA'}</div><h1>{view==='overview'?'Контроль качества продаж':view==='managers'?'Менеджеры':'Разбор звонка'}</h1></div>
+        {!demo&&view!=='managers'&&<form className="miniUpload" onSubmit={upload}><input name="title" placeholder="Название"/><select name="manager_id" defaultValue=""><option value="">Менеджер</option>{managers.filter(m=>m.is_active).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select><input name="file" type="file" accept="audio/*,video/*" required/><button disabled={uploading}>{uploading?'…':'Загрузить'}</button></form>}
       </header>
 
       {view==='overview'?<div className="overview">
+        <div className="filterBar"><strong>Фильтр:</strong><button className={selectedManager==='all'?'filterActive':''} onClick={()=>setSelectedManager('all')}>Весь отдел</button>{visibleManagers.map(m=><button key={m.id} className={selectedManager===m.id?'filterActive':''} onClick={()=>setSelectedManager(m.id)}>{m.name}</button>)}</div>
         <section className="metricGrid">
           <article><span>Средний балл</span><strong>{avg}</strong><small>по {visibleCalls.length} звонкам</small></article>
           <article><span>Звонков</span><strong>{visibleCalls.length}</strong><small>в текущей выборке</small></article>
@@ -181,9 +209,23 @@ export default function Home(){
             </div>
           </div>
         </section>
+      </div>:view==='managers'?<div className="managersView">
+        {!demo&&<form className="managerCreate" onSubmit={createManager}><div><span className="eyebrow">НОВЫЙ МЕНЕДЖЕР</span><h2>Добавить сотрудника</h2></div><input value={managerDraft} onChange={e=>setManagerDraft(e.target.value)} placeholder="Имя менеджера" required/><input value={managerEmailDraft} onChange={e=>setManagerEmailDraft(e.target.value)} placeholder="Email, необязательно"/><button>Добавить</button></form>}
+        <div className="managerGrid">{visibleManagers.map(m=>{
+          const mc=baseCalls.filter(c=>c.manager_id===m.id || (!c.manager_id&&c.manager_name===m.name))
+          const ms=mc.filter(c=>c.overall_score!=null).map(c=>Number(c.overall_score))
+          const mav=Math.round(ms.reduce((a,b)=>a+b,0)/(ms.length||1))
+          const today=mc.filter(c=>new Date(c.created_at).toDateString()===new Date().toDateString()).length
+          const best=Math.max(...ms,0)
+          return <article className="managerCard" key={m.id}>
+            <div className="managerHead"><div className="avatar">{m.name.slice(0,1).toUpperCase()}</div><div><strong>{m.name}</strong><small>{m.email||'Без email'}</small></div><span className={m.is_active?'activeDot':'inactiveDot'}>{m.is_active?'Активен':'Выключен'}</span></div>
+            <div className="managerStats"><div><span>Средний балл</span><b>{mav||'—'}</b></div><div><span>Сегодня</span><b>{today}</b></div><div><span>Всего уроков</span><b>{mc.length}</b></div><div><span>Лучший</span><b>{best||'—'}</b></div></div>
+            <div className="managerActions"><button onClick={()=>{setSelectedManager(m.id);setView('overview')}}>Статистика</button><button onClick={()=>{setSelectedManager(m.id);setView('calls')}}>Звонки →</button></div>
+          </article>
+        })}</div>
       </div>:<div className="callsView">
         <aside className="callRail">
-          <div className="railHead"><strong>Звонки</strong><span>{visibleCalls.length}</span></div>
+          <div className="railHead"><div><strong>Звонки</strong><select value={selectedManager} onChange={e=>setSelectedManager(e.target.value)}><option value="all">Весь отдел</option>{visibleManagers.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></div><span>{visibleCalls.length}</span></div>
           {visibleCalls.map(c=><button key={c.id} className={current?.id===c.id?'railCall active':''} onClick={()=>openCall(c)}><div><strong>{c.title}</strong><small>{c.manager_name||'—'} · {mmss(c.duration_seconds)}</small></div><b>{Math.round(c.overall_score||0)}</b></button>)}
         </aside>
 
