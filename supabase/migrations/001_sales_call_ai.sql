@@ -120,3 +120,24 @@ alter table public.call_insights enable row level security;
 grant select on public.call_insights to authenticated;
 create policy "call_insights_read_own_call" on public.call_insights for select to authenticated
 using (exists(select 1 from public.calls c where c.id = call_insights.call_id and c.user_id = (select auth.uid())));
+
+
+create table if not exists public.managers (
+  id uuid primary key default gen_random_uuid(),
+  owner_user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  email text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  metadata jsonb not null default '{}'::jsonb
+);
+create index if not exists managers_owner_idx on public.managers(owner_user_id, is_active, name);
+alter table public.managers enable row level security;
+grant select, insert, update, delete on public.managers to authenticated;
+create policy "managers_select_own" on public.managers for select to authenticated using ((select auth.uid()) = owner_user_id);
+create policy "managers_insert_own" on public.managers for insert to authenticated with check ((select auth.uid()) = owner_user_id);
+create policy "managers_update_own" on public.managers for update to authenticated using ((select auth.uid()) = owner_user_id) with check ((select auth.uid()) = owner_user_id);
+create policy "managers_delete_own" on public.managers for delete to authenticated using ((select auth.uid()) = owner_user_id);
+
+alter table public.calls add column if not exists manager_id uuid references public.managers(id) on delete set null;
+create index if not exists calls_manager_created_idx on public.calls(manager_id, created_at desc);
